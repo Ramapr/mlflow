@@ -1,0 +1,75 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:latest
+    container_name: db_mlflow
+    restart: unless-stopped
+    environment:
+      - "POSTGRES_USER=${DB_USER}"
+      - "POSTGRES_PASSWORD=${DB_PASS}"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  minio:
+    image: minio/minio:latest 
+    container_name: minio
+    restart: unless-stopped
+    ports:
+     - ${S3_MAIN_PORT}:9000
+     - ${S3_CONSOLE_PORT}:9090
+    environment:
+      - "MINIO_ROOT_USER=${S3_USER}"
+      - "MINIO_ROOT_PASSWORD=${S3_PASS}"
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address "0.0.0.0:${S3_CONSOLE_PORT}" --address "0.0.0.0:${S3_MAIN_PORT}"
+
+
+  minio_setup:
+    image: 'minio/mc'
+    container_name: buckets_create
+    volumes:
+      - ./minio/ml-policy.json:/ml-policy.json
+    entrypoint: >
+      /bin/sh -c "
+      until  (/usr/bin/mc alias set min http://minio:${S3_MAIN_PORT} ${S3_USER} ${S3_PASS} ) do echo '...wait' && sleep 1; done;
+      ls -lah;
+      /usr/bin/mc mb min/${MLFLOW_BUCKET};
+      echo 'add buckets';
+      /usr/bin/mc admin user add  min ${ML_USER} ${ML_USER_PASS};
+      echo 'add users';
+      /usr/bin/mc admin policy create min ml-policy ml-policy.json;
+      echo 'policies created';
+      /usr/bin/mc admin policy attach min ml-policy  --user ${ML_USER};
+      echo 'attached policies to users';
+      echo 'job done';
+      exit 0;"
+    depends_on:
+      - minio
+
+  mlflow:
+    container_name: mlflow
+    build:
+      context: ./mlflow/
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - ${MLFLOW_PORT}:${MLFLOW_PORT}
+    environment:
+      - "BACKEND_URI=postgresql://${DB_USER}:${DB_PASS}@postgres:5432"
+      - "MLFLOW_S3_ENDPOINT_URL=http://minio:${S3_MAIN_PORT}"
+      - "ARTIFACT_ROOT=s3://${MLFLOW_BUCKET}/"
+      - "AWS_ACCESS_KEY_ID=${S3_USER}"
+      - "AWS_SECRET_ACCESS_KEY=${S3_PASS}"
+      - "AWS_DEFAULT_REGION=${S3_REGION}"
+    depends_on:
+      - postgres
+      - minio
+      - minio_setup
+
+volumes:
+  postgres_data:
+  minio_data:
+
+
